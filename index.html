@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Folk Art Needlepoint · X‑Stitch Cam</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            user-select: none;
+            touch-action: none;
+        }
+        body {
+            background: #2e281f;
+            overflow: hidden;
+            font-family: 'Courier New', 'Monaco', monospace;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+            cursor: crosshair;
+        }
+        .controls {
+            position: fixed;
+            bottom: 20px;
+            left: 0;
+            right: 0;
+            display: flex;
+            justify-content: center;
+            gap: 18px;
+            z-index: 20;
+            backdrop-filter: blur(10px);
+            background: rgba(30, 27, 22, 0.8);
+            padding: 10px 24px;
+            border-radius: 60px;
+            width: fit-content;
+            margin: 0 auto;
+            border: 1px solid #eedd99aa;
+            pointer-events: auto;
+        }
+        button {
+            background: #4a3a2c;
+            border: none;
+            color: #fff3da;
+            font-family: monospace;
+            font-weight: bold;
+            font-size: 1rem;
+            padding: 8px 22px;
+            border-radius: 40px;
+            letter-spacing: 1px;
+            cursor: pointer;
+            transition: 0.08s linear;
+            border: 1px solid #e8cf92;
+            box-shadow: 0 2px 8px black;
+        }
+        button:active { transform: scale(0.96); background: #6d543c; }
+        .status {
+            position: fixed;
+            top: 18px;
+            right: 18px;
+            background: #1e1b16dd;
+            backdrop-filter: blur(6px);
+            padding: 6px 16px;
+            border-radius: 40px;
+            font-size: 12px;
+            font-weight: bold;
+            font-family: monospace;
+            color: #f7e8b0;
+            z-index: 20;
+            letter-spacing: 0.5px;
+            border-left: 4px solid #f2b84e;
+            pointer-events: none;
+        }
+        @media (max-width: 600px) {
+            button { padding: 6px 14px; font-size: 0.75rem; }
+            .controls { gap: 12px; padding: 8px 18px; bottom: 12px; }
+            .status { font-size: 9px; top: 12px; right: 12px; }
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+</head>
+<body>
+<div class="controls">
+    <button id="switchCamBtn">🪡 SWITCH CAMERA</button>
+</div>
+<div class="status" id="camStatus">📷 folk loom · loading</div>
+
+<script>
+    // ========== VIBRANT FOLK ART PALETTE (8 bold colors) ==========
+    const FOLK_PALETTE = [
+        [215, 50, 50],   // 1. Chinese Red
+        [240, 200, 60],  // 2. Golden Harvest
+        [40, 80, 180],   // 3. Cobalt Blue
+        [80, 160, 80],   // 4. Jade Green
+        [240, 120, 40],  // 5. Bright Orange
+        [200, 60, 120],  // 6. Magenta
+        [50, 180, 170],  // 7. Turquoise
+        [70, 45, 35]     // 8. Deep Earth Brown
+    ];
+
+    // fast Euclidean distance -> closest folk color
+    function closestFolkColor(r, g, b) {
+        let best = FOLK_PALETTE[0];
+        let bestDist = Infinity;
+        for (let c of FOLK_PALETTE) {
+            let dr = r - c[0];
+            let dg = g - c[1];
+            let db = b - c[2];
+            let d = dr*dr + dg*dg + db*db;
+            if (d < bestDist) {
+                bestDist = d;
+                best = c;
+            }
+        }
+        return color(best[0], best[1], best[2]);
+    }
+
+    // ---------- GLOBALS ----------
+    let video;              // p5 video capture
+    let srcBuffer;         // offscreen canvas: exact size = grid (cols x rows)
+    let cols, rows;        // grid resolution (number of X's)
+    let cellW, cellH;      // pixel dimensions of each X on main canvas
+    let currentFacing = "user";
+    let cameraReady = false;
+    let isSwitching = false;
+
+    // target size of each X on screen (big & bold)
+    const TARGET_CELL_SIZE = 28;
+
+    // ---------- GRID MANAGEMENT ----------
+    function updateGridDimensions() {
+        let newCols = floor(width / TARGET_CELL_SIZE);
+        let newRows = floor(height / TARGET_CELL_SIZE);
+        cols = constrain(newCols, 35, 100);
+        rows = constrain(newRows, 28, 80);
+        cellW = width / cols;
+        cellH = height / rows;
+
+        // recreate source buffer at exact grid resolution
+        if (srcBuffer) srcBuffer.remove();
+        srcBuffer = createGraphics(cols, rows);
+        srcBuffer.pixelDensity(1);
+    }
+
+    // ---------- CAMERA INIT (avoid over-constrained by using 'ideal') ----------
+    function initCamera(facingMode) {
+        if (video && video.elt && video.elt.srcObject) {
+            let tracks = video.elt.srcObject.getTracks();
+            tracks.forEach(t => t.stop());
+        }
+
+        // Use 'ideal' instead of 'exact' to prevent over-constrained error
+        const constraints = {
+            video: {
+                facingMode: { ideal: facingMode },
+                width: { ideal: 640 },
+                height: { ideal: 480 }
+            }
+        };
+
+        video = createCapture(constraints, () => {
+            cameraReady = true;
+            updateStatusText();
+            video.hide();
+            updateGridDimensions();
+            // ensure loop is running
+            if (!isLooping()) loop();
+        });
+
+        video.elt.addEventListener('error', (err) => {
+            console.warn("Camera error, falling back to default", err);
+            // fallback: no facingMode constraint
+            video = createCapture({ video: true });
+            video.hide();
+            cameraReady = true;
+            updateGridDimensions();
+            if (!isLooping()) loop();
+        });
+
+        // Also start loop as soon as video has metadata
+        video.elt.addEventListener('loadedmetadata', () => {
+            if (!cameraReady) cameraReady = true;
+            updateGridDimensions();
+            if (!isLooping()) loop();
+        });
+    }
+
+    function toggleCamera() {
+        if (isSwitching) return;
+        isSwitching = true;
+        currentFacing = (currentFacing === 'user') ? 'environment' : 'user';
+        initCamera(currentFacing);
+        updateStatusText();
+        setTimeout(() => { isSwitching = false; }, 700);
+    }
+
+    function updateStatusText() {
+        let statusDiv = select('#camStatus');
+        let camName = (currentFacing === 'user') ? "📸 FRONT (mirrored)" : "🌿 BACK";
+        statusDiv.html(`${camName} · 8‑color folk stitch`);
+    }
+
+    // ---------- MAIN DRAW LOOP: mirror front cam, reduce to 8 colors, draw X's ----------
+    function draw() {
+        if (!cameraReady || !video || video.width === 0) {
+            background(235, 222, 188);
+            fill(80, 60, 45);
+            textAlign(CENTER, CENTER);
+            textSize(22);
+            text("🧵 waiting for camera...\n请允许摄像头", width/2, height/2);
+            return;
+        }
+
+        // update grid if canvas resized
+        if (cols !== floor(width / TARGET_CELL_SIZE) || rows !== floor(height / TARGET_CELL_SIZE)) {
+            updateGridDimensions();
+        }
+
+        // --- STEP 1: draw video into srcBuffer, mirror if front camera ---
+        if (video.width > 0 && video.height > 0) {
+            srcBuffer.clear(); // clear to transparent/black
+            srcBuffer.push();
+            if (currentFacing === 'user') {
+                // Mirror horizontally: translate to right edge, scale -1
+                srcBuffer.translate(cols, 0);
+                srcBuffer.scale(-1, 1);
+            }
+            srcBuffer.image(video, 0, 0, cols, rows);
+            srcBuffer.pop();
+        } else {
+            srcBuffer.background(150, 130, 100);
+        }
+
+        // --- STEP 2: sample pixels from srcBuffer, map to 8 folk colors, draw X's ---
+        srcBuffer.loadPixels();
+        if (srcBuffer.pixels.length === 0) return;
+
+        // background: rustic linen
+        background(235, 222, 188);
+
+        // optional faint grain texture (adds charm)
+        push();
+        stroke(120, 95, 70, 35);
+        strokeWeight(0.8);
+        for (let i = 0; i < 500; i++) point(random(width), random(height));
+        pop();
+
+        // iterate through every grid cell
+        for (let row = 0; row < rows; row++) {
+            for (let col = 0; col < cols; col++) {
+                let idx = (row * cols + col) * 4;
+                let r = srcBuffer.pixels[idx];
+                let g = srcBuffer.pixels[idx+1];
+                let b = srcBuffer.pixels[idx+2];
+
+                // quantize to 8 vibrant folk colors
+                let stitchColor = closestFolkColor(r, g, b);
+
+                // cell position on main canvas
+                let cx = col * cellW;
+                let cy = row * cellH;
+                let cw = cellW;
+                let ch = cellH;
+
+                // draw big, bold X with colored yarn
+                push();
+                stroke(stitchColor);
+                let strokeW = max(3.5, min(cw, ch) * 0.2);
+                strokeWeight(strokeW);
+                strokeCap(ROUND);
+                // first diagonal
+                line(cx + cw*0.2, cy + ch*0.2, cx + cw*0.8, cy + ch*0.8);
+                // second diagonal
+                line(cx + cw*0.8, cy + ch*0.2, cx + cw*0.2, cy + ch*0.8);
+                // tiny center knot
+                strokeWeight(strokeW * 0.7);
+                point(cx + cw/2, cy + ch/2);
+                pop();
+            }
+        }
+
+        // decorative folk-art border
+        noFill();
+        strokeWeight(6);
+        stroke(180, 130, 85);
+        rect(4, 4, width-8, height-8);
+        strokeWeight(2.5);
+        stroke(245, 215, 130);
+        rect(10, 10, width-20, height-20);
+
+        // small signature
+        fill(100, 70, 50, 130);
+        noStroke();
+        textSize(max(11, width*0.012));
+        textAlign(RIGHT, BOTTOM);
+        text("✤ 8‑color folk X‑stitch", width-16, height-12);
+    }
+
+    // ---------- RESIZE HANDLER ----------
+    function windowResized() {
+        resizeCanvas(windowWidth, windowHeight);
+        updateGridDimensions();
+        redraw();
+    }
+
+    // ---------- SAVE CANVAS ----------
+    function keyPressed() {
+        if (key === 's' || key === 'S') {
+            saveCanvas('folk_needlepoint', 'jpg');
+            let old = select('#camStatus').html();
+            select('#camStatus').html("💾 saved tapestry");
+            setTimeout(() => {
+                if (cameraReady) select('#camStatus').html(old);
+                else select('#camStatus').html("📷 folk loom");
+            }, 1000);
+        }
+    }
+
+    // ---------- SETUP ----------
+    function setup() {
+        let canvas = createCanvas(windowWidth, windowHeight);
+        canvas.style('display', 'block');
+        pixelDensity(1);
+        // initially noLoop, we'll start loop when camera is ready
+        noLoop();
+
+        updateGridDimensions();
+        initCamera('user');   // start with front camera (mirrored)
+
+        let btn = select('#switchCamBtn');
+        btn.mousePressed(toggleCamera);
+        btn.touchStarted(toggleCamera);
+
+        background(235, 222, 188);
+        fill(70, 55, 40);
+        textAlign(CENTER, CENTER);
+        textSize(24);
+        text("🧵  folk art loom loading...", width/2, height/2);
+    }
+
+    // ensure loop starts when camera is ready (fallback)
+    function startLoopWhenReady() {
+        if (cameraReady && !isLooping()) loop();
+    }
+    setInterval(startLoopWhenReady, 300);
+
+    // clean up camera on page unload
+    window.addEventListener('beforeunload', () => {
+        if (video && video.elt && video.elt.srcObject) {
+            video.elt.srcObject.getTracks().forEach(t => t.stop());
+        }
+    });
+</script>
+</body>
+</html>
